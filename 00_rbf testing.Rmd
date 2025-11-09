@@ -1,0 +1,475 @@
+---
+title: "00_rbf testing"
+author: "Brenna Kelly"
+date: "2025-11-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Objectives:  
+- demonstrate the use of spatial information, why we might include it; how spatial information is encoded  
+- what is the task? prediction or understanding  
+- what different types of spatial information add   
+- can improve predictions but also improve understanding (spatial autocorrelation)  
+
+```{r}
+
+library(sp)
+library(sf)
+library(tmap)
+library(mlr3)
+library(ranger)
+library(mlr3learners)
+# library(caret)
+# library(randomForest)
+
+data("meuse")
+
+```
+
+
+
+```{r}
+
+meuse <- na.omit(meuse)
+
+meuse$id <- row.names(meuse)
+
+plot(cbind(st_as_sf(meuse, coords = c("x", "y"), crs = 28992),
+           meuse$x, meuse$y), max.plot = 15)
+
+
+```
+
+### Testing  
+We'll try a few different scenarios: no explicitly spatial information, some spatial information, only spatial information
+
+```{r}
+
+all_data <- meuse
+
+no_spatial_subset <- subset(meuse, select = -c(x, y, dist, dist.m))
+
+# some spatial
+no_coords_subset <- subset(meuse, select = -c(x, y))
+some_spatial_subset <- subset(meuse, select = -c(dist, dist.m))
+
+# only coords
+coords_subset <- subset(meuse, select = c(x, y, id, zinc))
+# coords and distance to river
+coords_dist_subset <- subset(meuse, select = c(x, y, id, dist, dist.m, zinc))
+
+# distance between points
+meuse_dist <- as.matrix(dist(cbind(meuse$x, meuse$y)))
+meuse_dist_inv <- 1 / meuse_dist
+diag(meuse_dist_inv) <- 0
+
+meuse_idw <- cbind(meuse, meuse_dist_inv)
+excl_names <- names(subset(meuse, select = -c(zinc, id)))
+idw_subset <- meuse_idw[, !names(meuse_idw) %in% excl_names]
+
+# distance plus other non-spatial
+idw_plus_subset <- subset(meuse_idw, select = -c(x, y, dist, dist.m))
+# idw_plus_subset <- subset(meuse_idw, select = -c(dist, dist.m))
+
+data_subsets <- list(all_data, no_spatial_subset, no_coords_subset,
+                     some_spatial_subset, coords_subset,
+                     coords_dist_subset, idw_subset,
+                     meuse_idw)
+names(data_subsets) <- c("all_data",
+                         "no_spatial_subset", "no_coords_subset",
+                         "some_spatial_subset", "coords_subset",
+                         "coords_dist_subset", "idw_subset",
+                         "idw_plus_subset")
+
+```
+
+
+### Function to return RF results  
+Takes a dataframe which contains `zinc` and the desired covariates.
+
+```{r}
+
+rf_fx <- function(data) {
+  
+  # task
+  task <- TaskRegr$new("id", 
+                       subset(data, select = -c(id)), 
+                       target = "zinc")
+  # learner
+  learn_rf <- lrn("regr.ranger", importance = "permutation")
+  
+  # train
+  learn_rf$train(task)
+  
+  # predict
+  predictions <- learn_rf$predict(task)
+  
+  print(
+    predictions$score(msr("regr.rmse"))
+  )
+  
+  print(learn_rf$importance())
+  # print(learn_rf$selected_features())
+  
+  # meuse_res <- cbind(meuse, y_hat = predictions$response)
+  # meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
+  # 
+  # print(moranfast(meuse_res$residual, meuse_res$x, meuse_res$y))
+  
+}
+
+for(i in 1:length(data_subsets)) {
+  
+  print(names(data_subsets[i]))
+  rf_fx(data_subsets[[i]])
+  
+}
+
+```
+
+
+
+
+### An aspatial random forest
+
+```{r}
+
+# train_dat <- trainControl(method = "cv", number = 5)
+
+# task
+task <- TaskRegr$new("id", 
+                     subset(idw_subset, select = -c(id)), 
+                     target = "zinc")
+
+# learner
+learn_rf <- lrn("regr.ranger", importance = "permutation")
+
+# learn_rf$param_set$values$maxdepth
+
+# train
+learn_rf$train(task)
+
+# predict
+predictions <- learn_rf$predict(task)
+
+# performance
+predictions$score(msr("regr.rmse"))
+sd(meuse$zinc)
+
+# plot predictions
+
+meuse_res <- cbind(meuse, y_hat = predictions$response)
+meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
+
+# make sf
+meuse_sf <- st_as_sf(meuse, coords = c("x", "y"), crs = 28992)
+
+tmap_mode(mode = "view")
+
+pred_zinc <- tm_shape(meuse_res_sf) +
+  tm_dots(fill = "y_hat", fill.scale = tm_scale_continuous(values = "viridis",
+                                                           limits = c(110, 1850)),
+          size = 0.5) +
+  tm_layout(frame = FALSE,
+            legend.frame = FALSE)
+
+true_zinc <- tm_shape(meuse_res_sf) +
+  tm_dots(fill = "zinc", fill.scale = tm_scale_continuous(values = "viridis",
+                                                          limits = c(110, 1850)),
+          size = 0.5) +
+  tm_layout(frame = FALSE,
+            legend.frame = FALSE)
+
+tmap_arrange(true_zinc, pred_zinc)
+
+# plot residuals
+tm_shape(meuse_res_sf) +
+  tm_dots(fill = "residual", fill.scale = tm_scale_continuous(),
+          size = 0.5) +
+  tm_layout(frame = FALSE,
+            legend.frame = FALSE)
+
+# is there spatial autocorrelation in the residuals?
+
+# meuse_dist <- as.matrix(dist(cbind(meuse_res$x, meuse_res$y)))
+# meuse_dist_inv <- 1 / meuse_dist
+# diag(meuse_dist_inv) <- 0
+
+library(moranfast)
+moranfast(meuse_res$residual, meuse_res$x, meuse_res$y)
+
+# what features did it use?
+learn_rf$selected_features()
+
+```
+
+
+Let's say we like this prediction. What if we want to extrapolate?
+
+```{r}
+
+# define the centroids of a grid to extrapolate to
+# plot(st_make_grid(st_bbox(meuse_sf), cellsize = 100, square = FALSE))
+
+grid <- st_make_grid(st_bbox(meuse_sf), cellsize = 100, square = FALSE)
+grid_centers <- st_centroid(grid)
+grid_centers <- st_as_sf(grid_centers)
+names(grid_centers) <- "geometry"
+
+grid <- st_as_sf(grid) # keep, make sf
+
+grid_dist <- cbind(grid_centers, 
+                   st_distance(grid_centers$geometry, 
+                               meuse_sf$geometry))
+names(grid_dist) <- gsub("X", "", names(grid_dist))
+grid_dist <- st_drop_geometry(grid_dist)
+
+grid_dist[] <- lapply(grid_dist, as.numeric)
+grid_dist[] <- 1 / grid_dist[]
+
+# grid_dist[374, ] # highest around 104; ~0.109
+# subset(idw_subset, select = -c(id, zinc))[104, ]
+
+# names(grid_dist) <- paste0("b_", names(grid_dist))
+
+grid_predictions = learn_rf$predict_newdata(grid_dist)
+
+
+grid$y_hat = grid_predictions$response
+grid$id = as.numeric(row.names(grid))
+
+tm_shape(grid) +
+  tm_polygons(fill = "y_hat", fill.scale = 
+                tm_scale_continuous(values = "viridis"),
+              lwd = 0) +
+  tm_shape(meuse_sf) +
+  tm_dots(fill = "white")
+
+## IDW gives roundness; more flexible functions may be preferred
+
+```
+
+### RBFs
+
+```{r}
+
+library(FRK)
+
+?auto_basis
+
+meuse_basis <- auto_basis(data = as_Spatial(meuse_sf),
+                          nres = 2, prune = 1,
+                          regular = 0, type = "bisquare")
+
+show_basis(meuse_basis) +
+  coord_fixed() +
+  geom_sf(data = meuse_sf, fill = NA, color = "red")
+
+# evaluate the basis functions at each meuse point
+basis_res <- eval_basis(meuse_basis, as_Spatial(meuse_sf))
+colnames(basis_res) <- paste0("b_", 1:ncol(basis_res))
+
+# add new features to meuse data
+meuse_dat_basis <- cbind(meuse, as.matrix(basis_res))
+
+```
+
+Now test this with the RF
+
+```{r}
+
+rf_fx(meuse_dat_basis) # quick test with all features
+
+# now with just basis functions
+excl_names <- names(subset(meuse, select = -c(zinc, id)))
+rbf_subset <- meuse_dat_basis[, !names(meuse_dat_basis) %in% excl_names]
+
+task <- TaskRegr$new("id", 
+                     subset(rbf_subset, select = -c(id)), 
+                     target = "zinc")
+# learner
+learn_rf <- lrn("regr.ranger", importance = "permutation")
+
+# train
+learn_rf$train(task)
+
+# evaluate
+predictions$score(msr("regr.rmse"))
+
+# predict
+predictions <- learn_rf$predict(task)
+
+predictions$score(msr("regr.rmse"))
+
+learn_rf$importance()
+
+meuse_res <- cbind(meuse, y_hat = predictions$response)
+meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
+
+print(moranfast(meuse_res$residual, meuse_res$x, meuse_res$y))
+
+```
+
+Now predict at other locations
+
+```{r}
+
+grid <- st_make_grid(st_bbox(meuse_sf), cellsize = 100, square = FALSE)
+grid_centers <- st_centroid(grid)
+# grid_centers <- st_as_sf(grid_centers)
+names(grid_centers) <- "geometry"
+
+grid_centers <- as.data.frame(grid_centers)
+grid_centers$id <- 1:length(grid_centers)
+
+x_coord_g = st_coordinates(grid_centers)[, "X"]
+y_coord_g = st_coordinates(grid_centers)[, "Y"]
+
+grid_pts <- st_as_sf(data.frame("x" = x_coord_g, "y" = y_coord_g),
+                     coords = c("x", "y"), crs = 28992)
+grid_pts$id <- 1:nrow(grid_pts)
+
+
+grid_centers <- st_as_sf(grid_centers, geometry = geometry, crs = 28992)
+# grid <- st_as_sf(grid)
+
+# evaluate the basis functions at each new point
+
+# test_basis <- auto_basis(data = as_Spatial(grid_pts),
+#                           nres = 2, prune = 1,
+#                           regular = 0, type = "bisquare")
+
+# test_res <- eval_basis(meuse_basis, as_Spatial(meuse_sf))
+grid_basis_res <- eval_basis(meuse_basis, as_Spatial(grid_pts))
+colnames(grid_basis_res) <- paste0("b_", 1:ncol(grid_basis_res))
+
+grid_basis_res <- data.frame(as.matrix(grid_basis_res))
+
+# predict for new locations
+grid_predictions = learn_rf$predict_newdata(grid_basis_res)
+
+# plot
+grid_res <- cbind(st_as_sf(grid), y_hat = grid_predictions$response)
+
+tm_shape(grid_res) +
+  tm_polygons(fill = "y_hat", fill.scale = 
+                tm_scale_continuous(values = "viridis"),
+              lwd = 0) +
+  tm_shape(meuse_sf) +
+  tm_dots(fill = "white")
+
+
+
+```
+
+Do RBFs (in addition to other variables) give us a good model?
+
+```{r}
+
+# now with all variables and basis functions
+task <- TaskRegr$new("id", 
+                     subset(meuse_dat_basis, select = -c(id)), 
+                     target = "zinc")
+# learner
+learn_rf <- lrn("regr.ranger", importance = "permutation")
+
+# train
+learn_rf$train(task)
+
+# predict
+predictions <- learn_rf$predict(task)
+
+# evaluate
+predictions$score(msr("regr.rmse"))
+
+learn_rf$importance()
+
+# plot final prediction surface
+meuse_rbf_res <- cbind(meuse_sf, y_hat = predictions$response)
+
+tm_shape(meuse_rbf_res) +
+  tm_dots(fill = "y_hat", fill.scale = 
+                tm_scale_continuous(values = "viridis"),
+              size = 1)
+
+
+
+```
+
+Is that better than the IDW model with other variables?
+
+```{r}
+
+rf_fx(idw_plus_subset) # RMSE = 63.6 vs. 50 with basis functions
+
+```
+
+Note that the RBF model changes feature importance — cadmium is relatively less important than it was in the original model, and it's also less important than copper.
+
+```{r}
+# library(LatticeKrig)
+# 
+# grid <- st_make_grid(st_bbox(meuse_sf), cellsize = 1000, square = FALSE)
+# grid <- st_as_sf(grid)
+# 
+# # prep the grid
+# x_coord_g = st_coordinates(grid)[, "X"] / 100000
+# y_coord_g = st_coordinates(grid)[, "Y"] / 100000
+# grid_matrix = matrix(c(x_coord_g, y_coord_g), 
+#                      nrow = length(y_coord_g), 
+#                      ncol = 2, byrow = TRUE)
+# 
+# # where to evaluate the RBFs (using meuse)
+# x_coord_m = st_coordinates(meuse_sf)[, "X"] / 100000
+# y_coord_m = st_coordinates(meuse_sf)[, "Y"] / 100000
+# meuse_matrix = matrix(c(x_coord_m, y_coord_m), 
+#                       nrow = length(y_coord_m), 
+#                       ncol = 2, byrow = TRUE)
+# 
+# distances = rdist(grid_matrix, meuse_matrix)
+# wendland_m <- Radial.basis(gl, #matrix(runif(20), ncol = 2), #matrix(x_coord_m, y_coord_m),
+#                            meuse_matrix,#matrix(runif(10), ncol = 2), #centers = matrix(x_coord_g, y_coord_g),
+#                            d = distances,
+#                            # distance.type = "Euclidean",
+#                            basis.delta = 0.5, # scale parameter
+#                            max.points = 10000,
+#                            BasisFunction = "WendlandFunction")
+# wendland_m
+
+```
+
+
+
+```{r}
+# dt<- seq( 0,1.5,, 200)
+# 
+# y<- Wendland( dt, k=2, dimension=2)
+# 
+# plot( dt, y, type="l")
+# 
+# # should agree with 
+# 
+# y.test<- Wendland2.2( dt)
+# points( dt, y.test)
+# 
+# # second derivative
+# plot( dt, Wendland( dt, k=4, dimension=2, derivative=2), type="l")
+# 
+# # a radial basis function using the Wendland  the  "knot" is at (.25,.25)
+# gl<- list( x= seq( -1,1,,60), y = seq( -1,1,,60) )
+# 
+# bigD<- rdist( make.surface.grid( gl), matrix( c(.25,.25), nrow=1))
+# RBF<- matrix(Wendland( bigD, k=2, dimension=2), 60,60)
+# 
+# # perspective with some useful settings for shading.
+# persp( gl$x, gl$y, RBF, theta =30, phi=20, shade=.3, border=NA, col="grey90")
+
+
+```
+
+
