@@ -56,6 +56,14 @@ head(meuse)
 
 ```
 
+Light cleaning
+```{r}
+
+meuse <- na.omit(meuse) # remove missing
+meuse$id <- row.names(meuse) # create an ID variable, for ML
+
+```
+
 The `meuse` dataset contains topsoil heavy metal concentrations at given locations along the flood plain of the river Meuse. Note the spatial structure in the features.
 
 ```{r}
@@ -76,15 +84,6 @@ tmap_mode(mode = "view")
 tm_shape(meuse_sf) +
   tm_dots(fill = "zinc", size = 0.75,
           tm_scale_continuous(values = "viridis"))
-
-```
-\n\   
-Let's do some light cleaning:
-
-```{r}
-
-meuse <- na.omit(meuse) # remove missing
-meuse$id <- row.names(meuse) # create an ID variable, for ML
 
 ```
 
@@ -245,7 +244,7 @@ learn_rf_rbf <- lrn("regr.ranger", importance = "permutation")
 learn_rf_rbf$train(task_rbf)
 
 # predict
-predictions_rbf <- learn_rf_rbf$predict(task)
+predictions_rbf <- learn_rf_rbf$predict(task_rbf)
 
 # evaluate
 predictions_rbf$score(msr("regr.rmse"))
@@ -294,7 +293,7 @@ meuse_res <- cbind(meuse, y_hat = predictions$response)
 meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
 
 # make sf
-meuse_sf <- st_as_sf(meuse, coords = c("x", "y"), crs = 28992)
+meuse_res_sf <- st_as_sf(meuse_res, coords = c("x", "y"), crs = 28992)
 
 tmap_mode(mode = "view")
 
@@ -367,7 +366,7 @@ The soil samples are generally grouped together and fairly dense, with few spati
 # only basis functions as features
 excl_names <- names(subset(meuse, select = -c(zinc, id)))
 rbf_subset <- meuse_rbf_res[, !names(meuse_rbf_res) %in% excl_names]
-# rbf_subset <- subset(rbf_subset), select = -c(y_hat, residual))
+rbf_subset <- subset(rbf_subset, select = -c(y_hat, residual))
 
 task <- TaskRegr$new("id", 
                      subset(rbf_subset, select = -c(id)), 
