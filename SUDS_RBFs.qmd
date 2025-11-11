@@ -1,0 +1,398 @@
+---
+title: "Introduction to radial basis functions for spatial machine learning"
+author: 
+  - name: "Brenna Kelly"
+    email: brenna.kelly@utah.edu
+    affiliations:
+      - name: Population Health Sciences
+date: last-modified
+format:
+  html:
+    toc: true
+    toc-location: left
+editor: source
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Thinking spatially  
+
+When data occur in space, the observations are often **spatially autocorrelated** — near things are closer than far things. This means are data are not independent from each other. Dealing with spatial autocorrelation can be a challenge, but accounting for this structure can help us better understand our data and improve predictions.  
+
+Spatial data is frequently used in machine learning (ML), but **spatial relationships** (i.e., spatial structure, autocorrelation) are often overlooked or oversimplified. In this workshop, we will:  
+- Compare common approaches for spatial ML  
+- Learn to encode spatial relationships using radial basis functions (RBFs)  
+- Discuss metrics for assessing spatial ML models  
+
+## Setup  
+
+For those following along:
+
+```{r, message=FALSE, warning=FALSE}
+
+library(sp)
+library(sf)
+library(FRK)
+library(mlr3)
+library(tmap)
+library(purrr)
+library(ranger)
+library(ggplot2)
+library(moranfast)
+library(kableExtra)
+library(mlr3learners)
+
+data("meuse")
+
+set.seed(1110)
+
+```
+
+Let's take a look at the data we'll be working with.
+
+```{r, message=FALSE, warning=FALSE}
+
+head(meuse)
+
+```
+
+The `meuse` dataset contains topsoil heavy metal concentrations at given locations along the flood plain of the river Meuse. Note the spatial structure in the features.
+
+```{r}
+
+meuse_sf <- st_as_sf(meuse, coords = c("x", "y"), crs = 28992) |>
+  cbind("x" = meuse$x, "y" = meuse$y)
+
+plot(meuse_sf, max.plot = 15)
+
+```
+  
+The target of our models will be `zinc`.
+
+```{r, message=FALSE, warning=FALSE}
+
+tmap_mode(mode = "view")
+
+tm_shape(meuse_sf) +
+  tm_dots(fill = "zinc", size = 0.75,
+          tm_scale_continuous(values = "viridis"))
+
+```
+\n\   
+Let's do some light cleaning:
+
+```{r}
+
+meuse <- na.omit(meuse) # remove missing
+meuse$id <- row.names(meuse) # create an ID variable, for ML
+
+```
+
+## Comparison of approaches for spatial ML
+
+Our data clearly has spatial structure. Let's use a simple random forest to compare a few approaches to dealing with this. Given a set of features, the `rf_fx()` function below will train a random forest to predict zinc, providing us with a few measures of model performance.
+
+```{r}
+
+rf_fx <- function(data) {
+  
+  # task
+  task <- TaskRegr$new("id", 
+                       subset(data, select = -c(id)), 
+                       target = "zinc")
+  # learner
+  learn_rf <- lrn("regr.ranger", importance = "permutation")
+  
+  # train
+  learn_rf$train(task)
+  
+  # predict
+  predictions <- learn_rf$predict(task)
+  
+  # check the RMSE for this model
+  rmse = predictions$score(msr("regr.rmse"))
+  
+  # what features were important to this model?
+  top_features = names(learn_rf$importance()[1:5]) # just the top 5
+  
+  # check for spatial structure in residuals using Moran's I
+  meuse_res <- cbind(meuse, y_hat = predictions$response)
+  meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
+  
+  # clustering or dispersion?
+  moran_i = moranfast(meuse_res$residual, meuse_res$x, meuse_res$y)$observed
+  # significant autocorrelation?
+  moran_p = moranfast(meuse_res$residual, meuse_res$x, meuse_res$y)$p.value
+  
+  return(data.frame(rmse = predictions$score(msr("regr.rmse")),
+                    moran_i = moran_i,
+                    moran_p = round(moran_p, 4),
+                    feature_1 = top_features[1], feature_2 = top_features[2],
+                    feature_3 = top_features[3], feature_4 = top_features[4],
+                    feature_5 = top_features[5]))
+}
+
+```
+
+The `meuse` dataset contains 14 features, plus an identifier `id`. Some of these features, such as the coordinates `x` and `y` and distance of the site to the river `dist` and `dist.m`, are **explicitly spatial**. Coordinates are a type of **absolute** location, while distance to the river is a type of **relative** location — note that absolute location limits extrapolation, and relative location is more generalizable.  
+
+Other features in `meuse` are not explicitly spatial but do have spatial patterns (i.e., implicitly spatial). We'll create a few sets of features to test, but note that our "aspatial" feature set does technically have some spatial structure.  
+
+Distance can be a useful feature, but it may be overly simplistic for some situations. It may improve prediction and help us understand important relationships in our data, but more advanced methods for capturing relative location allow us to consider and address autocorrelation — not just how spatial structure in an outcome is due to a covariate, but how it may truly be driven by spatial autocorrelation. For the last feature sets, we'll represent spatial proximity between locations using an inverse distance weights matrix. Note that this is an `N x N` matrix and would scale poorly with large datasets.
+
+```{r}
+
+all_features <- meuse
+
+# aspatial: no explicitly spatial features
+aspatial <- subset(meuse, select = -c(x, y, dist, dist.m))
+
+# aspatial features plus: absolute location, relative locations
+coords_plus <- subset(meuse, select = -c(dist, dist.m))
+dist_plus <- subset(meuse, select = -c(x, y))
+
+# only explicitly spatial features: only absolute, only relative
+coords_only <- subset(meuse, select = c(x, y, id, zinc))
+dist_only <- subset(meuse, select = c(id, dist, dist.m, zinc))
+
+## create matrix of inverse distance weights
+meuse_dist <- as.matrix(dist(cbind(meuse$x, meuse$y)))
+meuse_dist_inv <- 1 / meuse_dist
+diag(meuse_dist_inv) <- 0
+
+# IDW features only
+meuse_idw <- cbind(meuse, meuse_dist_inv)
+excl_names <- names(subset(meuse, select = -c(zinc, id)))
+idw_only <- meuse_idw[, !names(meuse_idw) %in% excl_names]
+
+# IDW plus aspatial features
+idw_plus <- subset(meuse_idw, select = -c(x, y, dist, dist.m))
+
+# IDW plus spatial features
+idw_plus_spatial <- meuse_idw
+
+data_subsets <- list(all_features, aspatial, 
+                     coords_plus, dist_plus,
+                     coords_only, dist_only,
+                     idw_only, idw_plus, idw_plus_spatial)
+names(data_subsets) <- c("all_features", "aspatial", 
+                         "coords_plus", "dist_plus",
+                         "coords_only", "dist_only",
+                         "idw_only", "idw_plus", "idw_plus_spatial")
+
+```
+
+Let's use the function we created above to compare these feature sets.
+
+```{r}
+
+compare_res <- list()
+
+for(i in 1:length(data_subsets)) {
+  
+  compare_res[[i]] <- cbind("feature_set" = names(data_subsets[i]),
+                            rf_fx(data_subsets[[i]]))
+}
+
+compare_df <- map_df(compare_res, ~as.data.frame(.))
+rownames(compare_df) <- NULL 
+
+compare_df
+
+```
+Consider that the standard deviation for zinc is 366, the RMSE is fairly decent across all these models. However, some seem to perform better than others. The model with the smallest RMSE was all features except distance (RMSE = ~37), but the aspatial model, model with all features, and model with all features except coordinates all performed comparably well — at least by this metric.  
+
+If we look to the Moran's I statistic and statistical significance, the only models which did not have statistically significant clustering of residuals were the coordinates only and the models using the IDW features. This means while the other models seemed to perform well, they are also biased. This creates problems when doing prediction or inference tasks. (Note: if we were really targeting a predictive model, we would need to consider a spatial cross-validation strategy.)  
+
+Based on both the RMSE and Moran's I, we might conclude that the preferred model is the one using IDW features, spatial features, and aspatial features.  
+
+## Radial basis functions
+
+Here we'll take a look at the RBF slides for a brief introduction to radial basis functions (RBFs).  
+
+Next, we'll create
+
+```{r}
+
+meuse_basis <- auto_basis(data = as_Spatial(meuse_sf),
+                          nres = 2, prune = 1,
+                          regular = 0, type = "bisquare")
+
+show_basis(meuse_basis) +
+  coord_fixed() +
+  geom_sf(data = meuse_sf, fill = NA, color = "red")
+
+# evaluate the basis functions at each meuse point
+basis_res <- eval_basis(meuse_basis, as_Spatial(meuse_sf))
+colnames(basis_res) <- paste0("b_", 1:ncol(basis_res))
+
+# add new features to meuse data
+meuse_dat_basis <- cbind(meuse, as.matrix(basis_res))
+
+```
+
+
+Let's compare the previous feature sets against a model also using RBFs.
+
+```{r}
+
+# now with all variables and basis functions
+task <- TaskRegr$new("id", 
+                     subset(meuse_dat_basis, select = -c(id)), 
+                     target = "zinc")
+# learner
+learn_rf <- lrn("regr.ranger", importance = "permutation")
+
+# train
+learn_rf$train(task)
+
+# predict
+predictions <- learn_rf$predict(task)
+
+# evaluate
+predictions$score(msr("regr.rmse"))
+
+learn_rf$importance()
+
+# plot final prediction surface
+meuse_rbf_res <- cbind(meuse_sf, y_hat = predictions$response)
+
+tm_shape(meuse_rbf_res) +
+  tm_dots(fill = "y_hat", fill.scale = 
+                tm_scale_continuous(values = "viridis"),
+              size = 1)
+
+# is there anymore autocorrelation?
+meuse_res <- cbind(meuse, y_hat = predictions$response)
+meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
+
+moranfast(meuse_res$residual, meuse_res$x, meuse_res$y)
+
+
+```
+
+
+
+
+## Interpolation  
+Let's say we want to use a random forest to interpolate, or predict between the observed values, and generate a predictive surface. Since we don't know the values of the nonspatial features at unobserved locations (including distance to the river Meuse), we're restricted to the purely spatial feature sets. The inverse distance weights (`idw_only`) had a smaller RMSE than the coordinates (`coords_only`), and this feature set also had no significant spatial structure in the residuals (moran p-value < 0.05).
+
+We'll quickly run the IDW model and store the results:
+
+```{r}
+
+# task
+task <- TaskRegr$new("id", 
+                     subset(idw_only, select = -c(id)), 
+                     target = "zinc")
+# learner
+learn_rf <- lrn("regr.ranger", importance = "permutation")
+
+# train
+learn_rf$train(task)
+
+# predict
+predictions <- learn_rf$predict(task)
+
+```
+
+And let's make a map of the predicted values:
+
+```{r}
+
+meuse_res <- cbind(meuse, y_hat = predictions$response)
+meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
+
+# make sf
+meuse_sf <- st_as_sf(meuse, coords = c("x", "y"), crs = 28992)
+
+tmap_mode(mode = "view")
+
+pred_zinc <- tm_shape(meuse_res_sf) +
+  tm_dots(fill = "y_hat", fill.scale = tm_scale_continuous(values = "viridis",
+                                                           limits = c(110, 1850)),
+          size = 0.5) +
+  tm_layout(frame = FALSE,
+            legend.frame = FALSE)
+
+true_zinc <- tm_shape(meuse_res_sf) +
+  tm_dots(fill = "zinc", fill.scale = tm_scale_continuous(values = "viridis",
+                                                          limits = c(110, 1850)),
+          size = 0.5) +
+  tm_layout(frame = FALSE,
+            legend.frame = FALSE)
+
+tmap_arrange(true_zinc, pred_zinc)
+
+```
+
+Let's say we're happy with these predictions and are ready to interpolate. We'll need to choose points at which to extrapolate, which we can get using a grid. For each new point, we'll need to calculate the inverse distance weight from the original points in the `meuse` data.
+
+```{r}
+
+grid <- st_make_grid(st_bbox(meuse_sf), cellsize = 100, square = FALSE)
+grid_centers <- st_centroid(grid) # we'll predict at these points
+grid_centers <- st_as_sf(grid_centers)
+names(grid_centers) <- "geometry"
+
+grid <- st_as_sf(grid) # keep for plotting
+
+grid_dist <- cbind(grid_centers, 
+                   st_distance(grid_centers$geometry, 
+                               meuse_sf$geometry)) # get distance
+names(grid_dist) <- gsub("X", "", names(grid_dist)) # rename so features match the predictive model
+
+grid_dist <- st_drop_geometry(grid_dist) # we'll add grid distance to the hexagon geom, so drop geom
+
+grid_dist[] <- lapply(grid_dist, as.numeric) # convert from distance units to numeric
+grid_dist[] <- 1 / grid_dist[] # inverse
+
+# predict values at new locations
+grid_predictions = learn_rf$predict_newdata(grid_dist)
+
+# add these predictions to the hexagon grid for plotting
+grid$y_hat = grid_predictions$response
+# grid$id = as.numeric(row.names(grid))
+
+# and plot
+tm_shape(grid) +
+  tm_polygons(fill = "y_hat", fill.scale = 
+                tm_scale_continuous(values = "viridis",
+                                    limits = c(110, 1850)),
+              lwd = 0) +
+  tm_shape(meuse_sf) +
+  tm_dots(fill = "white") # points where we actually had data
+  # tm_dots(fill = "zinc", fill.scale = 
+  #           tm_scale_continuous(values = "viridis",
+  #                               limits = c(110, 1850))) # if we want to compare
+
+```
+
+## Interpolation with basis functions
+
+
+
+```{r}
+
+meuse_basis <- auto_basis(data = as_Spatial(meuse_sf),
+                          nres = 2, prune = 1,
+                          regular = 0, type = "bisquare")
+
+show_basis(meuse_basis) +
+  coord_fixed() +
+  geom_sf(data = meuse_sf, fill = NA, color = "red")
+
+# evaluate the basis functions at each meuse point
+basis_res <- eval_basis(meuse_basis, as_Spatial(meuse_sf))
+colnames(basis_res) <- paste0("b_", 1:ncol(basis_res))
+
+# add new features to meuse data
+meuse_dat_basis <- cbind(meuse, as.matrix(basis_res))
+
+
+```
+
+
+
+
+

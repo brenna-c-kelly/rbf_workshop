@@ -14,7 +14,8 @@ Objectives:
 - demonstrate the use of spatial information, why we might include it; how spatial information is encoded  
 - what is the task? prediction or understanding  
 - what different types of spatial information add   
-- can improve predictions but also improve understanding (spatial autocorrelation)  
+- how do RBFs work  
+- can improve predictions but also improve understanding (account for some portion of spatial autocorrelation)  
 
 ```{r}
 
@@ -24,8 +25,6 @@ library(tmap)
 library(mlr3)
 library(ranger)
 library(mlr3learners)
-# library(caret)
-# library(randomForest)
 
 data("meuse")
 
@@ -311,7 +310,7 @@ learn_rf$importance()
 meuse_res <- cbind(meuse, y_hat = predictions$response)
 meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
 
-print(moranfast(meuse_res$residual, meuse_res$x, meuse_res$y))
+moranfast(meuse_res$residual, meuse_res$x, meuse_res$y)
 
 ```
 
@@ -396,6 +395,12 @@ tm_shape(meuse_rbf_res) +
   tm_dots(fill = "y_hat", fill.scale = 
                 tm_scale_continuous(values = "viridis"),
               size = 1)
+
+# is there anymore autocorrelation?
+meuse_res <- cbind(meuse, y_hat = predictions$response)
+meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
+
+moranfast(meuse_res$residual, meuse_res$x, meuse_res$y)
 
 
 
