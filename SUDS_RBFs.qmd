@@ -210,13 +210,13 @@ Based on both the RMSE and Moran's I, we might conclude that the preferred model
 
 Here we'll take a look at the RBF slides for a brief introduction to radial basis functions (RBFs).  
 
-Next, we'll create
+Next, we'll create RBFs over the extent of the `meuse` data, evaluate the RBFs for each point, and add the weights to the `meuse` dataframe.
 
 ```{r}
 
 meuse_basis <- auto_basis(data = as_Spatial(meuse_sf),
-                          nres = 2, prune = 1,
-                          regular = 0, type = "bisquare")
+                          nres = 2, regular = 0, 
+                          type = "Gaussian")
 
 show_basis(meuse_basis) +
   coord_fixed() +
@@ -230,51 +230,41 @@ colnames(basis_res) <- paste0("b_", 1:ncol(basis_res))
 meuse_dat_basis <- cbind(meuse, as.matrix(basis_res))
 
 ```
-
-
-Let's compare the previous feature sets against a model also using RBFs.
+With these new features, let's compare the previous feature sets against a model also using RBFs.
 
 ```{r}
 
 # now with all variables and basis functions
-task <- TaskRegr$new("id", 
-                     subset(meuse_dat_basis, select = -c(id)), 
-                     target = "zinc")
+task_rbf <- TaskRegr$new("id", 
+                         subset(meuse_dat_basis, select = -c(id)), 
+                         target = "zinc")
 # learner
-learn_rf <- lrn("regr.ranger", importance = "permutation")
+learn_rf_rbf <- lrn("regr.ranger", importance = "permutation")
 
 # train
-learn_rf$train(task)
+learn_rf_rbf$train(task_rbf)
 
 # predict
-predictions <- learn_rf$predict(task)
+predictions_rbf <- learn_rf_rbf$predict(task)
 
 # evaluate
-predictions$score(msr("regr.rmse"))
+predictions_rbf$score(msr("regr.rmse"))
 
-learn_rf$importance()
+# which features are important now?
+learn_rf_rbf$importance()
 
-# plot final prediction surface
-meuse_rbf_res <- cbind(meuse_sf, y_hat = predictions$response)
+# check for autocorrelation
+meuse_rbf_res <- cbind(meuse_dat_basis, y_hat = predictions_rbf$response)
+meuse_rbf_res$residual <- meuse_rbf_res$zinc - meuse_rbf_res$y_hat
 
-tm_shape(meuse_rbf_res) +
-  tm_dots(fill = "y_hat", fill.scale = 
-                tm_scale_continuous(values = "viridis"),
-              size = 1)
-
-# is there anymore autocorrelation?
-meuse_res <- cbind(meuse, y_hat = predictions$response)
-meuse_res$residual <- meuse_res$zinc - meuse_res$y_hat
-
-moranfast(meuse_res$residual, meuse_res$x, meuse_res$y)
-
+moranfast(meuse_rbf_res$residual, meuse_rbf_res$x, meuse_rbf_res$y)
 
 ```
+<< why this is better, not just because of these numbers; extrapolation
 
 
 
-
-## Interpolation  
+## Interpolation (extrapolation?)   
 Let's say we want to use a random forest to interpolate, or predict between the observed values, and generate a predictive surface. Since we don't know the values of the nonspatial features at unobserved locations (including distance to the river Meuse), we're restricted to the purely spatial feature sets. The inverse distance weights (`idw_only`) had a smaller RMSE than the coordinates (`coords_only`), and this feature set also had no significant spatial structure in the residuals (moran p-value < 0.05).
 
 We'll quickly run the IDW model and store the results:
@@ -326,7 +316,7 @@ tmap_arrange(true_zinc, pred_zinc)
 
 ```
 
-Let's say we're happy with these predictions and are ready to interpolate. We'll need to choose points at which to extrapolate, which we can get using a grid. For each new point, we'll need to calculate the inverse distance weight from the original points in the `meuse` data.
+Let's say we're happy with these predictions and want to interpolate. We'll need to choose points at which to interpolate, which we can get using a grid. For each new point, we'll need to calculate the inverse distance weight from the original points in the `meuse` data.
 
 ```{r}
 
@@ -368,27 +358,60 @@ tm_shape(grid) +
 
 ```
 
-## Interpolation with basis functions
+The soil samples are generally grouped together and fairly dense, with few spatial outliers — conditions under which IDW is perhaps well suited.
 
-
+## Interpolation (extrapolation?) with basis functions
 
 ```{r}
 
-meuse_basis <- auto_basis(data = as_Spatial(meuse_sf),
-                          nres = 2, prune = 1,
-                          regular = 0, type = "bisquare")
+# only basis functions as features
+excl_names <- names(subset(meuse, select = -c(zinc, id)))
+rbf_subset <- meuse_rbf_res[, !names(meuse_rbf_res) %in% excl_names]
+# rbf_subset <- subset(rbf_subset), select = -c(y_hat, residual))
 
-show_basis(meuse_basis) +
-  coord_fixed() +
-  geom_sf(data = meuse_sf, fill = NA, color = "red")
+task <- TaskRegr$new("id", 
+                     subset(rbf_subset, select = -c(id)), 
+                     target = "zinc")
+# learner
+learn_rf <- lrn("regr.ranger", importance = "permutation")
 
-# evaluate the basis functions at each meuse point
-basis_res <- eval_basis(meuse_basis, as_Spatial(meuse_sf))
-colnames(basis_res) <- paste0("b_", 1:ncol(basis_res))
+# train
+learn_rf$train(task)
 
-# add new features to meuse data
-meuse_dat_basis <- cbind(meuse, as.matrix(basis_res))
+```
 
+Predict at grid locations
+
+```{r}
+
+grid <- st_make_grid(st_bbox(meuse_sf), cellsize = 100, square = FALSE)
+grid_centers <- st_centroid(grid)
+grid_centers <- st_as_sf(grid_centers)
+
+x_coord_g = st_coordinates(grid_centers)[, "X"]
+y_coord_g = st_coordinates(grid_centers)[, "Y"]
+
+grid_pts <- st_as_sf(data.frame("x" = x_coord_g, "y" = y_coord_g),
+                     coords = c("x", "y"), crs = 28992)
+grid_pts$id <- 1:nrow(grid_pts)
+
+grid_basis_res <- eval_basis(meuse_basis, as_Spatial(grid_pts))
+colnames(grid_basis_res) <- paste0("b_", 1:ncol(grid_basis_res))
+
+grid_basis_res <- data.frame(as.matrix(grid_basis_res))
+
+# predict for new locations
+grid_predictions = learn_rf$predict_newdata(grid_basis_res)
+
+# plot
+grid_res <- cbind(st_as_sf(grid), y_hat = grid_predictions$response)
+
+tm_shape(grid_res) +
+  tm_polygons(fill = "y_hat", fill.scale = 
+                tm_scale_continuous(values = "viridis"),
+              lwd = 0) +
+  tm_shape(meuse_sf) +
+  tm_dots(fill = "white")
 
 ```
 
