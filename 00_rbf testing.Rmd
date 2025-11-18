@@ -249,7 +249,7 @@ tm_shape(grid) +
   tm_shape(meuse_sf) +
   tm_dots(fill = "white")
 
-## IDW gives roundness; more flexible functions may be preferred
+## IDW gives roundness; more flexible functions may be preferred; some bulls-eye behavior
 
 ```
 
@@ -317,6 +317,14 @@ moranfast(meuse_res$residual, meuse_res$x, meuse_res$y)
 Now predict at other locations
 
 ```{r}
+
+## if using BAUs
+# Grid1D_df <- auto_BAUs(manifold = plane(),
+#                        cellsize = 200,
+#                        type = "hex",
+#                        data = as_Spatial(meuse_sf),
+#                        nonconvex_hull = 0)
+# spplot(Grid1D_df)
 
 grid <- st_make_grid(st_bbox(meuse_sf), cellsize = 100, square = FALSE)
 grid_centers <- st_centroid(grid)
