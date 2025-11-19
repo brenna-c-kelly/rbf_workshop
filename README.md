@@ -1,4 +1,4 @@
-# rbf_workshop
+# Radial Basis Functions Workshop
 
 SUDS Workshop: Intro to Radial Basis Functions for Spatial ML
 
