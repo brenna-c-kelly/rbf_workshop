@@ -19,9 +19,9 @@ editor_options:
 
 When data occur in space, the observations are often **spatially autocorrelated** — near things are closer than far things. This means are data are not independent from each other. Dealing with spatial autocorrelation can be a challenge, but accounting for this structure can help us better understand our data and improve predictions.
 
-Spatial data is frequently used in machine learning (ML), but **spatial relationships** (i.e., spatial structure, autocorrelation) are often overlooked or oversimplified. In this workshop, we will:\
-- Compare common approaches for spatial ML\
-- Learn to encode spatial relationships using radial basis functions (RBFs)\
+Spatial data is frequently used in machine learning (ML), but **spatial relationships** (i.e., spatial structure, spatial dependence, autocorrelation) are often overlooked or oversimplified. In this workshop, we will:  
+- Compare common approaches for spatial ML  
+- Learn to encode spatial relationships using radial basis functions (RBFs)  
 - Discuss metrics for assessing spatial ML models
 
 ## Setup
@@ -201,7 +201,7 @@ compare_df
 
 ```
 
-Consider that the standard deviation for zinc is 366, the RMSE is fairly decent across all these models. However, some seem to perform better than others. The model with the smallest RMSE was all features except distance (RMSE = ~37), but the aspatial model, model with all features, and model with all features except coordinates all performed comparably well — at least by this metric.
+Consider that the standard deviation for zinc is 366, the RMSE is fairly decent across all these models. However, some seem to perform better than others. The model with the smallest RMSE was all features except distance (RMSE = \~37), but the aspatial model, model with all features, and model with all features except coordinates all performed comparably well — at least by this metric.
 
 If we look to the Moran's I statistic and statistical significance, the only models which did not have statistically significant clustering of residuals were the coordinates only and the models using the IDW features. This means while the other models seemed to perform well, they are also biased. This creates problems when doing prediction or inference tasks. (Note: if we were really targeting a predictive model, we would need to consider a spatial cross-validation strategy.)
 
@@ -262,7 +262,8 @@ meuse_rbf_res$residual <- meuse_rbf_res$zinc - meuse_rbf_res$y_hat
 moranfast(meuse_rbf_res$residual, meuse_rbf_res$x, meuse_rbf_res$y)
 
 ```
-We can see that, of the feature sets which don't have statistically significant autocorrelation, this has the lowest RMSE. Additionally, we could compare the feature importance and see if accounting for spatial autocorrelation changes which features matter most.  
+
+We can see that, of the feature sets which don't have statistically significant autocorrelation, this has the lowest RMSE. Additionally, we could compare the feature importance and see if accounting for spatial autocorrelation changes which features matter most.
 
 By these metrics, the RBF model compares pretty comparably to the IDW models. But this method is far more computationally efficient when dealing with large datasets and can be more suitable for interpolation and extrapolation.
 
@@ -393,7 +394,7 @@ idw_interpolation
 
 ```
 
-What might indicate that this is a "good" prediction surface?  
+What might indicate that this is a "good" prediction surface?
 
 ## Interpolation with basis functions
 
@@ -416,7 +417,6 @@ colnames(basis_res) <- paste0("b_", 1:ncol(basis_res))
 meuse_dat_basis <- cbind(meuse, as.matrix(basis_res))
 
 ```
-
 
 ```{r}
 
@@ -489,5 +489,3 @@ rbf_interpolation
 tmap_arrange(idw_interpolation, rbf_interpolation)
 
 ```
-
-
