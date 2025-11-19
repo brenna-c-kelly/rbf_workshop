@@ -201,15 +201,15 @@ compare_df
 
 ```
 
-Consider that the standard deviation for zinc is 366, the RMSE is fairly decent across all these models. However, some seem to perform better than others. The model with the smallest RMSE was all features except distance (RMSE = \~37), but the aspatial model, model with all features, and model with all features except coordinates all performed comparably well — at least by this metric.
+Consider that the standard deviation for zinc is 366, the RMSE is fairly decent across all these models. However, some seem to perform better than others. The model with the smallest RMSE was all features except distance (RMSE = ~37), but the aspatial model, model with all features, and model with all features except coordinates all performed comparably well — at least by this metric.
 
 If we look to the Moran's I statistic and statistical significance, the only models which did not have statistically significant clustering of residuals were the coordinates only and the models using the IDW features. This means while the other models seemed to perform well, they are also biased. This creates problems when doing prediction or inference tasks. (Note: if we were really targeting a predictive model, we would need to consider a spatial cross-validation strategy.)
 
-Based on both the RMSE and Moran's I, we might conclude that the preferred model is the one using IDW features, spatial features, and aspatial features.
+Based on both the RMSE and Moran's I, we might conclude that the preferred model is the one using IDW spatial structure with spatial features and aspatial features.
 
-## Radial basis functions
+## Radial basis functions (RBFs)
 
-Here we'll take a look at the RBF slides for a brief introduction to radial basis functions (RBFs).
+Here we'll take a look at the slides for a brief introduction to RBFs.
 
 Next, we'll create RBFs over the extent of the `meuse` data, evaluate the RBFs for each point, and add the weights to the `meuse` dataframe.
 
@@ -262,10 +262,9 @@ meuse_rbf_res$residual <- meuse_rbf_res$zinc - meuse_rbf_res$y_hat
 moranfast(meuse_rbf_res$residual, meuse_rbf_res$x, meuse_rbf_res$y)
 
 ```
+We can see that, of the feature sets which don't have statistically significant autocorrelation, this has the lowest RMSE. Additionally, we could compare the feature importance and see if accounting for spatial autocorrelation changes which features matter most.  
 
-\<\< why this is better, not just because of these numbers; extrapolation
-
-Map
+By these metrics, the RBF model compares pretty comparably to the IDW models. But this method is far more computationally efficient when dealing with large datasets and can be more suitable for interpolation and extrapolation.
 
 ```{r}
 
@@ -286,11 +285,11 @@ tm_shape(meuse_res_sf) +
 
 ```
 
-## Interpolation (extrapolation?)
+## Interpolation
 
-Let's say we want to use a random forest to interpolate, or predict between the observed values, and generate a predictive surface. Since we don't know the values of the nonspatial features at unobserved locations (including distance to the river Meuse), we're restricted to the purely spatial feature sets. The inverse distance weights (`idw_only`) had a smaller RMSE than the coordinates (`coords_only`), and this feature set also had no significant spatial structure in the residuals (moran p-value \< 0.05).
+Let's say we want to use a random forest to interpolate, or predict between the observed values, and generate a predictive surface. Since we don't know the values of the nonspatial features at unobserved locations (including distance to the river Meuse), we're restricted to the purely spatial feature sets. We'll perform interpolation using the inverse distance weights (`idw_only`) and radial basis functions.
 
-We'll quickly run the IDW model and store the results:
+We'll quickly run the IDW-only model and store the results:
 
 ```{r}
 
@@ -306,6 +305,9 @@ learn_rf$train(task)
 
 # predict
 predictions <- learn_rf$predict(task)
+
+# let's remind ourselves of the RMSE
+predictions$score(msr("regr.rmse"))
 
 ```
 
@@ -342,96 +344,85 @@ tmap_arrange(true_zinc, pred_zinc)
 Let's say we're happy with these predictions and want to interpolate. We'll need to choose points at which to interpolate, which we can get using a grid. For each new point, we'll need to calculate the inverse distance weight from the original points in the `meuse` data.
 
 ```{r}
-###  with grid clipped to stream bank
-
+# create a grid using the FRK package's auto_BAUs
 Grid1D_df <- auto_BAUs(manifold = plane(),
                        cellsize = 100,
                        type = "hex",
                        data = as_Spatial(meuse_sf),
                        nonconvex_hull = 0)
 
-test <- st_as_sf(Grid1D_df, crs = st_crs(meuse_sf))
-test = st_transform(test, crs = st_crs(meuse_sf))
+grid <- st_as_sf(Grid1D_df, crs = st_crs(meuse_sf))
+grid_centers <- st_centroid(grid)
+grid_centers = st_transform(grid_centers, crs = st_crs(meuse_sf))
 
-test_dist <- cbind(test,
-                   st_distance(test$geometry,
+# get distance
+grid_dist <- cbind(grid_centers,
+                   st_distance(grid_centers$geometry,
                                meuse_sf$geometry))
+# rename so features match the predictive model
+names(grid_dist) <- gsub("X", "", names(grid_dist))
+# drop geometry, for next step
+grid_dist <- st_drop_geometry(grid_dist)
+# convert from distance units to numeric
+grid_dist[] <- lapply(grid_dist[], as.numeric)
+# inverse
+grid_dist[] <- 1 / grid_dist[]
 
-test_dist <- st_drop_geometry(test_dist)
+# predict values at new locations
+grid_predictions = learn_rf$predict_newdata(grid_dist)
 
-test_dist[] <- lapply(test_dist, as.numeric)
-test_dist[] <- 1 / test_dist[]
+# add these predictions to the hexagon grid for plotting
+grid_idw <- grid
+grid_idw$y_hat <- grid_predictions$response
 
-names(test_dist) <- gsub("X", "", names(test_dist))
-
-test_predictions = learn_rf$predict_newdata(test_dist)
-
-test$y_hat = test_predictions$response
-
-tm_shape(test) +
+# and plot
+idw_interpolation <- tm_shape(grid_idw) +
   tm_polygons(fill = "y_hat", fill.scale =
                 tm_scale_continuous(values = "viridis",
                                     limits = c(110, 1850)),
               lwd = 0) +
+  # points where we actually had data
   tm_shape(meuse_sf) +
-  tm_dots(fill = "white")
-  # tm_dots(fill = "zinc", tm_scale_continuous(values = "viridis",
-  #                                   limits = c(110, 1850)))
+  tm_dots(fill = "white", size = 0.1)
+  # to compare to true values:
+  # tm_dots(fill = "zinc", fill.scale =
+  #           tm_scale_continuous(values = "viridis",
+  #                               limits = c(110, 1850)))
+
+idw_interpolation
 
 ```
 
-```{r}
-# 
-# grid <- st_make_grid(st_bbox(meuse_sf), cellsize = 100, square = FALSE)
-# grid_centers <- st_centroid(grid) # we'll predict at these points
-# grid_centers <- st_as_sf(grid_centers)
-# names(grid_centers) <- "geometry"
-# 
-# grid <- st_as_sf(grid) # keep for plotting
-# 
-# grid_dist <- cbind(grid_centers, 
-#                    st_distance(grid_centers$geometry, 
-#                                meuse_sf$geometry)) # get distance
-# names(grid_dist) <- gsub("X", "", names(grid_dist)) # rename so features match the predictive model
-# 
-# grid_dist <- st_drop_geometry(grid_dist) # we'll add grid distance to the hexagon geom, so drop geom
-# 
-# grid_dist[] <- lapply(grid_dist, as.numeric) # convert from distance units to numeric
-# grid_dist[] <- 1 / grid_dist[] # inverse
-# 
-# # predict values at new locations
-# grid_predictions = learn_rf$predict_newdata(grid_dist)
-# 
-# # add these predictions to the hexagon grid for plotting
-# grid$y_hat = grid_predictions$response
-# # grid$id = as.numeric(row.names(grid))
-# 
-# # and plot
-# tm_shape(grid) +
-#   tm_polygons(fill = "y_hat", fill.scale = 
-#                 tm_scale_continuous(values = "viridis",
-#                                     limits = c(110, 1850)),
-#               lwd = 0) +
-#   tm_shape(meuse_sf) +
-#   tm_dots(fill = "white") # points where we actually had data
-#   # tm_dots(fill = "zinc", fill.scale = 
-#   #           tm_scale_continuous(values = "viridis",
-#   #                               limits = c(110, 1850))) # if we want to compare
-
-```
-
-The soil samples are generally grouped together and fairly dense, with few spatial outliers — conditions under which IDW is perhaps well suited.
-
-\<\>\<\> use best prediction set for basis functions compared to other features; use smoother results when interpolating, i.e., do both types of basis predictions
+What might indicate that this is a "good" prediction surface?  
 
 ## Interpolation with basis functions
 
 ```{r}
 
+# modify the basis functions slightly
+meuse_basis <- auto_basis(data = as_Spatial(meuse_sf),
+                          nres = 2, regular = 1, 
+                          type = "Gaussian")
+
+show_basis(meuse_basis) +
+  coord_fixed() +
+  geom_sf(data = meuse_sf, fill = NA, color = "red")
+
+# evaluate the basis functions at each meuse point
+basis_res <- eval_basis(meuse_basis, as_Spatial(meuse_sf))
+colnames(basis_res) <- paste0("b_", 1:ncol(basis_res))
+
+# add new features to meuse data
+meuse_dat_basis <- cbind(meuse, as.matrix(basis_res))
+
+```
+
+
+```{r}
+
 # only basis functions as features
 excl_names <- names(subset(meuse, select = -c(zinc, id)))
-rbf_subset <- meuse_rbf_res[, !names(meuse_rbf_res) %in% excl_names]
-rbf_subset <- subset(rbf_subset, select = -c(y_hat, residual))
+rbf_subset <- meuse_dat_basis[, !names(meuse_dat_basis) %in% excl_names]
 
 task <- TaskRegr$new("id", 
                      subset(rbf_subset, select = -c(id)), 
@@ -442,23 +433,17 @@ learn_rf <- lrn("regr.ranger", importance = "permutation")
 # train
 learn_rf$train(task)
 
+# the new, RBF-only RMSE
+predictions <- learn_rf$predict(task)
+predictions$score(msr("regr.rmse"))
+
 ```
 
 Predict at grid locations
 
 ```{r}
 
-# grid <- st_make_grid(st_bbox(meuse_sf), cellsize = 100, square = FALSE)
-# grid_centers <- st_centroid(grid)
-# grid_centers <- st_as_sf(grid_centers)
-# 
-# x_coord_g = st_coordinates(grid_centers)[, "X"]
-# y_coord_g = st_coordinates(grid_centers)[, "Y"]
-# 
-# grid_pts <- st_as_sf(data.frame("x" = x_coord_g, "y" = y_coord_g),
-#                      coords = c("x", "y"), crs = 28992)
-# grid_pts$id <- 1:nrow(grid_pts)
-
+# same procedures as above
 Grid1D_df <- auto_BAUs(manifold = plane(),
                        cellsize = 100,
                        type = "hex",
@@ -480,41 +465,29 @@ grid_basis_res <- data.frame(as.matrix(grid_basis_res))
 grid_predictions = learn_rf$predict_newdata(grid_basis_res)
 
 # plot
-grid_res <- cbind(st_as_sf(grid), y_hat = grid_predictions$response)
+grid_rbf <- cbind(st_as_sf(grid), y_hat = grid_predictions$response)
 
-tm_shape(grid_res) +
+rbf_interpolation <- tm_shape(grid_rbf) +
   tm_polygons(fill = "y_hat", fill.scale = 
                 tm_scale_continuous(values = "viridis",
                                 limits = c(110, 1850)),
-              # fill_alpha = 0.5,
               lwd = 0) +
   tm_shape(meuse_sf) +
-  tm_dots(fill = "white")
+  tm_dots(fill = "white", size = 0.1)
   # tm_dots(fill = "zinc", fill.scale =
   #           tm_scale_continuous(values = "viridis",
   #                               limits = c(110, 1850))) # if we want to compare
 
-
-
-
-
-# 
-# grid_basis_res <- eval_basis(meuse_basis, as_Spatial(grid_pts))
-# colnames(grid_basis_res) <- paste0("b_", 1:ncol(grid_basis_res))
-# 
-# grid_basis_res <- data.frame(as.matrix(grid_basis_res))
-# 
-# # predict for new locations
-# grid_predictions = learn_rf$predict_newdata(grid_basis_res)
-# 
-# # plot
-# grid_res <- cbind(st_as_sf(grid), y_hat = grid_predictions$response)
-# 
-# tm_shape(grid_res) +
-#   tm_polygons(fill = "y_hat", fill.scale = 
-#                 tm_scale_continuous(values = "viridis"),
-#               lwd = 0) +
-#   tm_shape(meuse_sf) +
-#   tm_dots(fill = "white")
+rbf_interpolation
 
 ```
+
+## Comparison
+
+```{r}
+
+tmap_arrange(idw_interpolation, rbf_interpolation)
+
+```
+
+
