@@ -39,7 +39,6 @@ library(purrr)
 library(ranger)
 library(ggplot2)
 library(moranfast)
-library(kableExtra)
 library(mlr3learners)
 
 data("meuse")
@@ -382,13 +381,13 @@ idw_interpolation <- tm_shape(grid_idw) +
                 tm_scale_continuous(values = "viridis",
                                     limits = c(110, 1850)),
               lwd = 0) +
-  # points where we actually had data
+  # # points where we actually had data
   tm_shape(meuse_sf) +
-  tm_dots(fill = "white", size = 0.1)
+  # tm_dots(fill = "white", size = 0.1)
   # to compare to true values:
-  # tm_dots(fill = "zinc", fill.scale =
-  #           tm_scale_continuous(values = "viridis",
-  #                               limits = c(110, 1850)))
+  tm_dots(fill = "zinc", fill.scale =
+            tm_scale_continuous(values = "viridis",
+                                limits = c(110, 1850)))
 
 idw_interpolation
 
@@ -473,10 +472,10 @@ rbf_interpolation <- tm_shape(grid_rbf) +
                                 limits = c(110, 1850)),
               lwd = 0) +
   tm_shape(meuse_sf) +
-  tm_dots(fill = "white", size = 0.1)
-  # tm_dots(fill = "zinc", fill.scale =
-  #           tm_scale_continuous(values = "viridis",
-  #                               limits = c(110, 1850))) # if we want to compare
+  # tm_dots(fill = "white", size = 0.1)
+  tm_dots(fill = "zinc", fill.scale =
+            tm_scale_continuous(values = "viridis",
+                                limits = c(110, 1850))) # if we want to compare
 
 rbf_interpolation
 
