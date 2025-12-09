@@ -130,7 +130,7 @@ rf_fx <- function(data) {
                     feature_3 = top_features[3], feature_4 = top_features[4],
                     feature_5 = top_features[5]))
 }
-
+ #test
 ```
 
 The `meuse` dataset contains 14 features, plus an identifier `id`. Some of these features, such as the coordinates `x` and `y` and distance of the site to the river `dist` and `dist.m`, are **explicitly spatial**. Coordinates are a type of **absolute** location, while distance to the river is a type of **relative** location — note that absolute location limits extrapolation, and relative location is more generalizable.
